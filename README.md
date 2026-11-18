@@ -1,267 +1,224 @@
+<div align="center">
+
 # Human In The Loop Agent with MCP
 
-> ⚠️ NOTE: This README content was generated with assistance from an AI. Please review and verify all sections for accuracy and update project-specific details as needed.
+**A LangGraph agent that writes a plan, asks for your approval, and runs tools over MCP.**
 
-A sophisticated AI agent system that combines LangGraph orchestration with Model Context Protocol (MCP) servers to provide human-in-the-loop capabilities for complex task execution. The system features a multi-node architecture with planning, execution, and response phases, all wrapped in an intuitive Streamlit interface.
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![LangGraph](https://img.shields.io/badge/built%20with-LangGraph-1C3C3C)](https://github.com/langchain-ai/langgraph)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![MCP](https://img.shields.io/badge/tools-MCP-black)](https://modelcontextprotocol.io/)
 
-## 🌟 Features
+[Demo](#demo) · [Architecture](#architecture) · [Quickstart](#quickstart) · [Configuration](#configuration) · [API](#api) · [Extending](#extending) · [License](#license)
 
-- **Human-in-the-Loop Workflow**: Interactive agent that can pause execution to request human input and approval
-- **LangGraph State Management**: Sophisticated state management using LangGraph for complex multi-step processes
-- **MCP Integration**: Seamless integration with Model Context Protocol servers for extensible tool capabilities
-- **Multi-Interface Support**: Both FastAPI REST endpoints and Streamlit web interface
-- **Modular Architecture**: Clean separation of concerns with dedicated nodes for orchestration, planning, execution, and response
-- **Real-time Communication**: Server-Sent Events (SSE) for real-time updates in the Streamlit UI
-- **Configurable LLM Backend**: Support for OpenAI GPT models with easy configuration
+</div>
 
-## 🏗️ Architecture
+An AI agent system that combines LangGraph orchestration with Model Context Protocol (MCP) servers to add human-in-the-loop control to complex task execution. The agent plans before it acts, shows you the plan, and asks you to approve every tool call. A FastAPI backend streams progress over server-sent events (SSE) to a plain HTML, CSS and JS web UI that it serves itself.
 
-![Human-in-the-Loop Workflow](images/HITL_Workflow.png)
+| At a glance | |
+|---|---|
+| Graph nodes | 4 (Orchestrate, Plan, Execute, Response) |
+| Human approval points | 2 (the plan, and each tool call) |
+| Example MCP tools | 3 (`add`, `multiply`, `magic_number`) |
+| Processes to start | 2 (`make mcp`, `make api`) |
 
-### System Components
+## Demo
+
+[![Demo: the agent proposes a plan, you approve it, MCP tools run](docs/assets/demo.gif)](docs/assets/demo.mp4)
+
+The prompt is "Add 12 and 30, then multiply the result by the magic number." The agent shows a plan, you approve it, then you approve each tool call, and the agent answers 210 (12 + 30 = 42, the magic number is 5, and 42 x 5 = 210). The animation plays at 2x speed; click it for the full MP4.
+
+![The plan card with Approve and Reject buttons](docs/assets/ui-plan-approval.png)
+
+## Architecture
+
+<p align="center"><img src="docs/diagrams/architecture.svg" alt="A request goes from the web UI to FastAPI, then through a LangGraph agent with Orchestrate, Plan, Execute and Response nodes; Execute calls MCP tools through the MCP client, and a local checkpointer saves each session." width="100%"></p>
+
+A request enters the web UI, reaches FastAPI at `POST /api/v1/astream`, and runs through a LangGraph graph whose entry point is Orchestrate. Orchestrate routes it to Plan, Execute or Response. Plan writes a plan and waits for you. Execute asks the LLM for tool calls, waits for your approval, runs the tools through the MCP client, and loops until it has an answer. A local checkpointer saves the state of each session as a JSON file in `dev_db/`.
+
+<details>
+<summary>Original workflow sketch</summary>
+
+<img src="docs/assets/hitl-workflow.png" alt="Overview workflow: the user confirms the plan and each tool execution; rejecting a tool call goes back to the orchestrator." width="100%">
+
+</details>
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Streamlit UI  │    │   FastAPI API   │    │   MCP Servers   │
-│                 │◄──►│                 │◄──►│                 │
-│  - Chat Interface   │    │  - REST Endpoints  │    │  - Math Server     │
-│  - Plan Display    │    │  - SSE Streaming   │    │  - Custom Tools    │
-│  - Human Input     │    │  - CORS Support    │    │  - HTTP Transport  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                │
-                                ▼
-                       ┌─────────────────┐
-                       │   LangGraph     │
-                       │   Orchestrator  │
-                       │                 │
-                       │  ┌─────────────┐ │
-                       │  │ Orchestrate │ │
-                       │  └─────────────┘ │
-                       │         │        │
-                       │  ┌─────────────┐ │
-                       │  │    Plan     │ │
-                       │  └─────────────┘ │
-                       │         │        │
-                       │  ┌─────────────┐ │
-                       │  │  Execute    │ │
-                       │  └─────────────┘ │
-                       │         │        │
-                       │  ┌─────────────┐ │
-                       │  │  Response   │ │
-                       │  └─────────────┘ │
-                       └─────────────────┘
+.
+├── configs/mcp_servers.json    # MCP servers the agent can use
+├── docs/                       # demo media, diagrams and the script that draws them
+├── src/hitl_agent/
+│   ├── agent/                  # LangGraph graph, nodes, states, LLM setup
+│   ├── api/                    # FastAPI app, routes and request schemas
+│   ├── mcp_client/             # loads tools from the configured MCP servers
+│   ├── mcp_servers/math/       # example MCP server (add, multiply, magic_number)
+│   ├── storage/                # local JSON checkpointer
+│   ├── utils/                  # SSE formatting and MCP tool lookup
+│   ├── web/                    # static web UI served at /
+│   └── config.py               # settings read from .env
+├── tests/
+├── Makefile
+└── pyproject.toml
 ```
 
-### Node Architecture
+<details>
+<summary>Tech stack</summary>
 
-- **Orchestrate Node**: Routes requests to appropriate processing nodes based on context
-- **Plan Node**: Generates execution plans for complex tasks requiring human oversight
-- **Execute Node**: Executes approved plans using available MCP tools
-- **Response Node**: Formats and delivers final responses to users
+| Area | Libraries |
+|---|---|
+| Agent | LangGraph, LangChain (`langchain-openai`) |
+| Tools | MCP (`mcp`, `fastmcp`, `langchain-mcp-adapters`) |
+| API | FastAPI, uvicorn, pydantic-settings |
+| Tracing | Langfuse |
+| Logging | loguru |
+| Tests | pytest, httpx |
 
-## 🚀 Quick Start
+</details>
 
-### Prerequisites
+## Quickstart
 
-- Python 3.10+
-- OpenAI API key
-- Git
+Prerequisites: Python 3.10+, an OpenAI API key, and Langfuse keys (the settings require them).
 
-### Installation
+1. Install: `python -m venv .venv && source .venv/bin/activate && pip install -e .`
+2. Configure: `cp .env.example .env`, then fill in the four required values.
+3. Run each in its own terminal: `make mcp` and `make api`, then open <http://localhost:8000>.
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd HumanInTheLoopAgent
-   ```
+<details>
+<summary>More</summary>
 
-2. **Create virtual environment**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+- Run everything from the repository root: `configs/mcp_servers.json` and `dev_db/` are relative paths.
+- Without `make`: `python -m hitl_agent.mcp_servers.math.server` and `uvicorn hitl_agent.api.main:app --host 0.0.0.0 --port 8000`.
+- Interactive API docs: <http://localhost:8000/docs>. OpenAPI schema: <http://localhost:8000/openapi.json>.
+- Start `make mcp` before `make api`; the API loads the tools when it starts.
+- The API only serves the web UI and the endpoint; there is no separate frontend process.
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+</details>
 
-4. **Environment Configuration**
-   Create a `.env` file in the root directory:
-   ```env
-   OPENAI_API_KEY=your_openai_api_key_here
-   ...
-   ```
+## Configuration
 
-## 🏃‍♂️ Running the Application
-
-### Option 1: Full Stack (Recommended)
-
-1. **Start MCP Server** (Terminal 1):
-   ```bash
-   python MCP/servers/math/server.py
-   ```
-
-2. **Start FastAPI Server** (Terminal 2):
-   ```bash
-   python app.py
-   ```
-
-3. **Launch Streamlit UI** (Terminal 3):
-   ```bash
-   streamlit run streamlit_app.py
-   ```
-
-### Option 2: API Only
-
-Start just the FastAPI server for API-only usage:
-```bash
-python app.py
-```
-
-Access the API documentation at: `http://localhost:8000/docs`
-
-## 🖥️ Usage
-
-### Streamlit Web Interface
-
-1. Navigate to `http://localhost:8501`
-2. Enter your query in the chat interface
-3. Watch as the agent orchestrates the workflow
-4. Provide human input when prompted
-5. Review execution plans before approval
-6. Receive final responses
-
-![Example Conversation](images/example.png)
-
-### API Endpoints
-
-#### Stream Chat Endpoint
-```bash
-POST /api/v1/astream
-Content-Type: application/json
-```
-
-## 🔧 Configuration
-
-### Environment Variables
+Settings are read from `.env` (see [`.env.example`](.env.example)).
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+|---|---|---|
 | `OPENAI_API_KEY` | OpenAI API key (required) | - |
-| `LLM_MODEL` | OpenAI model to use | `gpt-4-mini` |
-| `MCP_SERVER_CONFIGS_PATH` | Path to MCP server config | `MCP/mcp_server_config.json` |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key (required) | - |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (required) | - |
+| `LANGFUSE_HOST` | Langfuse host URL (required) | - |
+| `LLM_MODEL` | OpenAI model to use | `gpt-4-mini` in code; `.env.example` sets `gpt-4.1-mini` |
+| `MCP_SERVER_CONFIGS_PATH` | Path to the MCP server config | `configs/mcp_servers.json` |
 | `APP_NAME` | Application name | `Human In The Loop Agent` |
 | `APP_VERSION` | Application version | `1.0.0` |
 | `DEBUG` | Enable debug mode | `false` |
+| `LANGFUSE_DEBUG` | Enable Langfuse debug output | `false` |
 
-### MCP Server Configuration
+<details>
+<summary>MCP server configuration</summary>
 
-Edit `MCP/mcp_server_config.json` to configure MCP servers:
+Edit `configs/mcp_servers.json` to choose the MCP servers. It ships with the math server:
 
 ```json
 {
   "math": {
     "url": "http://localhost:3111/mcp",
     "transport": "streamable_http"
-  },
-  "custom_server": {
-    "url": "http://localhost:3112/mcp",
-    "transport": "streamable_http"
   }
 }
 ```
 
-## 📁 Project Structure
+To add another server, give it its own entry, for example `"custom_server": {"url": "http://localhost:3112/mcp", "transport": "streamable_http"}`.
 
-```
-HumanInTheLoopAgent/
-├── agent/                  # Core agent logic
-│   ├── graphs/            # LangGraph workflow definitions
-│   ├── nodes/             # Individual processing nodes
-│   └── states/            # State management classes
-├── app/                   # FastAPI application
-│   ├── api/v1/           # API version 1 endpoints
-│   └── schemas/          # Pydantic models
-├── MCP/                   # Model Context Protocol integration
-│   ├── clients/          # MCP client management
-│   └── servers/          # MCP server implementations
-├── utils/                 # Utility functions
-├── app.py                # FastAPI application entry point
-├── streamlit_app.py      # Streamlit UI application
-├── config.py             # Configuration management
-└── requirements.txt      # Python dependencies
-```
+</details>
 
-## 🛠️ Development
+## API
 
-### Adding New MCP Servers
-
-1. Create server implementation in `MCP/servers/your_server/`
-2. Add server config to `MCP/mcp_server_config.json`
-3. Restart the MCP client manager
-
-### Extending Node Functionality
-
-1. Add new nodes in `agent/nodes/`
-2. Update the workflow in `agent/graphs/orchestrator.py`
-3. Modify state classes in `agent/states/` if needed
-
-### Custom Tool Integration
-
-Tools are automatically discovered from configured MCP servers. Ensure your MCP server properly exposes tools according to the MCP specification.
-
-## 🧪 Testing
-
-Run the development notebook:
 ```bash
-jupyter notebook dev.ipynb
+curl -N -X POST http://localhost:8000/api/v1/astream \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id": "me", "session_id": "demo-1", "message": "hi"}'
 ```
 
-## 📝 API Documentation
+`user_id`, `session_id` and `message` are required. `messages`, `previous_node`, `current_plan` and `params` are optional. Reuse the same `session_id` for a whole conversation: the agent restores its state from the checkpoint saved for that session.
 
-Once the FastAPI server is running, visit:
-- Interactive API docs: `http://localhost:8000/docs`
-- OpenAPI schema: `http://localhost:8000/openapi.json`
+The response is a stream of `data: {...}` lines. The `type` field is one of `status`, `thinking`, `node_change`, `plan`, `message` or `complete`. If the server fails while streaming, it closes the connection without sending an error event.
 
-## 🐛 Troubleshooting
+## Extending
 
-### Common Issues
+**Add an MCP server**
 
-1. **MCP Server Connection Failed**
-   - Ensure MCP servers are running before starting the main application
-   - Check server URLs in `mcp_server_config.json`
-   - Verify no port conflicts
+1. Create `src/hitl_agent/mcp_servers/<name>/server.py`, using the math server as a template.
+2. Add its URL and transport to `configs/mcp_servers.json`.
+3. Restart `make api`. Tools are discovered from the configured servers when the API starts.
 
-2. **OpenAI API Errors**
-   - Verify `OPENAI_API_KEY` is set correctly
-   - Check API key permissions and usage limits
-   - Ensure the specified model is available
+**Change the agent**
 
-3. **Streamlit Not Loading**
-   - Check if FastAPI server is running on port 8000
-   - Verify no firewall blocking connections
-   - Clear browser cache and try again
+1. Add or edit nodes in `src/hitl_agent/agent/nodes/`.
+2. Wire them in `src/hitl_agent/agent/graph.py`.
+3. Change the state classes in `src/hitl_agent/agent/states/` if a node needs new fields.
 
-### Logs
+To redraw the architecture diagram, edit `docs/diagrams/make_diagrams.py` and run `python docs/diagrams/make_diagrams.py` (Python 3.10+, standard library only).
 
-The application uses Loguru for logging. Check console output for detailed error messages and debugging information.
+## Tests
 
-## 🤝 Contributing
+```bash
+pip install -e ".[dev]" && make test
+```
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+The tests run offline: fake keys and a stub LLM replace OpenAI. They cover module imports, serving the web UI, the tool-call approval flow and the checkpointer.
 
-## 📄 License
+## Troubleshooting
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+<details>
+<summary>The MCP server connection failed</summary>
 
-## 🙏 Acknowledgments
+The API logs `Failed to start MCP client` and keeps running without tools. Start `make mcp` first, check the URLs in `configs/mcp_servers.json`, make sure port 3111 is free, then restart `make api`.
 
-- [LangGraph](https://github.com/langchain-ai/langgraph) for workflow orchestration
-- [Model Context Protocol](https://modelcontextprotocol.io/) for tool integration
-- [Streamlit](https://streamlit.io/) for the web interface
-- [FastAPI](https://fastapi.tiangolo.com/) for the REST API framework
+</details>
+
+<details>
+<summary><code>FileNotFoundError</code> for <code>MCP/mcp_server_config.json</code></summary>
+
+An older `.env` still points at the previous config path. Set `MCP_SERVER_CONFIGS_PATH=configs/mcp_servers.json` or remove the line.
+
+</details>
+
+<details>
+<summary>OpenAI errors</summary>
+
+Check that `OPENAI_API_KEY` is set correctly, that the key has the needed permissions and quota, and that the model in `LLM_MODEL` is available to your account.
+
+</details>
+
+<details>
+<summary>The web UI shows "Connection error"</summary>
+
+The UI is served by the API, so open <http://localhost:8000> and make sure `make api` is running. The console log (Loguru) shows the cause.
+
+</details>
+
+<details>
+<summary>Langfuse errors in the log</summary>
+
+If `LANGFUSE_HOST` is unreachable, the API logs trace-export errors but the agent keeps working.
+
+</details>
+
+## Contributing
+
+1. Fork the repository.
+2. Create a feature branch.
+3. Make your changes.
+4. Run `make test`.
+5. Open a pull request.
+
+## License
+
+<details>
+<summary>Fonts and acknowledgments</summary>
+
+- The diagrams use the Patrick Hand font, SIL OFL 1.1, see [`docs/diagrams/OFL.txt`](docs/diagrams/OFL.txt).
+- Built with [LangGraph](https://github.com/langchain-ai/langgraph), the [Model Context Protocol](https://modelcontextprotocol.io/) and [FastAPI](https://fastapi.tiangolo.com/).
+
+</details>
+
+Code: [MIT](LICENSE)
