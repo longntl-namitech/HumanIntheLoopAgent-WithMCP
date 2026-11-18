@@ -3,8 +3,7 @@ from pathlib import Path
 
 import pytest
 
-# Not listed on purpose: agent.nodes.execute.execute (dead code, imports a missing module)
-# and ui.streamlit_app (runs Streamlit code at import).
+# Not listed on purpose: agent.nodes.execute.execute (dead code, imports a missing module).
 MODULES = [
     "hitl_agent.config",
     "hitl_agent.api.main",

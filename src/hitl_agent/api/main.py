@@ -1,6 +1,8 @@
 from hitl_agent.mcp_client.manager import mcp_client_manager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from hitl_agent.api.router import api_router
 import uvicorn
 from loguru import logger
@@ -49,6 +51,13 @@ def create_app():
     )
 
     application.include_router(api_router, prefix="/api/v1")
+
+    # Mounted last so it cannot shadow /api/v1 or /docs.
+    application.mount(
+        "/",
+        StaticFiles(directory=Path(__file__).resolve().parents[1] / "web", html=True),
+        name="web",
+    )
 
     # Add startup and shutdown event handlers
     application.add_event_handler("startup", startup_event)
