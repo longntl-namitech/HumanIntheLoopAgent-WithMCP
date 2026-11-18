@@ -140,7 +140,7 @@ curl -N -X POST http://localhost:8000/api/v1/astream \
 
 `user_id`, `session_id` and `message` are required. `messages`, `previous_node`, `current_plan` and `params` are optional. Reuse the same `session_id` for a whole conversation: the agent restores its state from the checkpoint saved for that session.
 
-The response is a stream of `data: {...}` lines. The `type` field is one of `status`, `thinking`, `node_change`, `plan`, `message`, `complete` or `error`.
+The response is a stream of `data: {...}` lines. The `type` field is one of `status`, `thinking`, `node_change`, `plan`, `message` or `complete`. If the server fails while streaming, it closes the connection without sending an error event.
 
 ## Extending
 
