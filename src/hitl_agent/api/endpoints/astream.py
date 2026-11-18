@@ -1,0 +1,226 @@
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+
+from langchain_core.messages import AIMessage, HumanMessage
+
+from langfuse.langchain import CallbackHandler
+
+from hitl_agent.agent.graph import graph
+
+from hitl_agent.api.schemas.chat_request import ChatRequest
+from hitl_agent.api.schemas.message import Message
+
+import uuid
+from hitl_agent.utils import convert_to_sse_format
+from loguru import logger
+
+# Create a router instance
+router = APIRouter()
+
+
+# Define routes within the router
+@router.post("/astream")
+async def astream(
+    request: ChatRequest
+):
+    logger.debug(f"Received request: {request}")
+
+    config = {
+        "configurable": {
+            "thread_id": request.session_id
+        }
+    }
+
+    all_checkpoints = list(
+        graph.checkpointer.list(
+            config,
+        )
+    )
+
+    last_checkpoint = all_checkpoints[-1] if all_checkpoints else None
+    last_state = {
+        "previous_node": None,
+        "current_plan": "",
+        "metadata": {}
+    }
+    if last_checkpoint:
+        last_state.update(last_checkpoint.checkpoint["channel_values"])
+
+        last_node = last_state.get("previous_node", None)
+        last_node_state = {}
+        if last_node:
+            node_checkpoints = list(
+                graph.checkpointer.list(
+                    config,
+                    filter={"checkpoint_ns": last_node}
+                )
+            )
+            last_node_checkpoint = node_checkpoints[-1] if node_checkpoints else None
+
+            logger.info(
+                f"Last node: {last_node}, Last node checkpoint: {last_node_checkpoint}"
+            )
+
+            if last_node_checkpoint:
+                last_node_state = last_node_checkpoint.checkpoint["channel_values"]
+        last_state["metadata"] = {
+            **last_state["metadata"],
+            **{k: v for k, v in last_node_state.items() if k not in last_state}
+        }
+
+    # Prepare inputs similar to the Streamlit app
+    messages = []
+
+    # Convert conversation history to LangChain messages
+    if request.messages:
+        for msg in request.messages:
+            if msg.get("role") == "user":
+                messages.append(HumanMessage(content=msg.get("content", "")))
+            elif msg.get("role") == "assistant":
+                messages.append(AIMessage(content=msg.get("content", "")))
+
+    # Add the current message if it's not already in the history
+    current_message = HumanMessage(content=request.message)
+    if not messages or messages[-1].content != request.message:
+        messages.append(current_message)
+
+    thread_id = request.session_id or str(uuid.uuid4())
+    inputs = {
+        **last_state,
+        "messages": messages,
+        "session_id": request.session_id,
+        # "previous_node": request.previous_node,
+        # "current_plan": request.current_plan or ""
+    }
+
+    logger.info(f"====== INPUTS ======\n{inputs}\n====================")
+
+    langfuse_handler = CallbackHandler()
+
+    async def wrapped_streaming_tokens():
+        full_response = ""
+        current_node = None
+
+        # Send initial status
+        yield convert_to_sse_format({
+            "content": "Agent is thinking...",
+            "type": "status",
+            "node": "starting"
+        })
+
+        # try:
+        previous_node = None
+        # Stream response from graph similar to Streamlit app
+        async for subgraph, mode, state in graph.astream(
+            inputs,
+            subgraphs=True,
+            stream_mode=["messages", "values", "custom"],
+            config={
+                "configurable": {
+                    "thread_id": thread_id
+                },
+                "callbacks": [langfuse_handler]
+            }
+        ):
+
+            if mode == "values":
+                # Handle state updates
+                current_plan = state.get("current_plan", "")
+                if current_plan:
+                    yield convert_to_sse_format({
+                        "content": f"Plan updated: {current_plan}",
+                        "type": "plan",
+                        "node": "Plan"
+                    })
+
+                # Update previous_node
+                if previous_node != state.get("previous_node", None):
+                    previous_node = state.get("previous_node", None)
+                    yield convert_to_sse_format({
+                        "content": f"**[Transitioned to {previous_node} Node]**",
+                        "type": "node_change",
+                        "node": previous_node,
+                        "previous_node": previous_node
+                    })
+                # if previous_node:
+                #     current_node = previous_node
+
+            elif mode == "messages":
+                msg, metadata = state
+
+                node = metadata.get("langgraph_node", "Unknown")
+
+                # # Send node change notification
+                # if current_node != node:
+                #     yield convert_to_sse_format({
+                #         "content": f"**[{node}]**",
+                #         "type": "node_change",
+                #         "node": node
+                #     })
+                #     current_node = node
+
+                is_stream = "check" not in node.lower()
+                is_stream = is_stream and node.lower() != "orchestrate"
+                if is_stream:
+                    # Send message content
+                    if msg.content:
+                        if isinstance(msg, AIMessage):
+                            full_response += msg.content
+                            yield convert_to_sse_format({
+                                "content": msg.content,
+                                "type": "message",
+                                "node": node,
+                                "previous_node": previous_node,
+                                "full_response": full_response
+                            })
+                        else:
+                            yield convert_to_sse_format({
+                                "content": msg.content,
+                                "type": "thinking",
+                                "node": node,
+                                "previous_node": previous_node
+                            })
+            elif mode == "custom":
+                msg = state
+                if msg.content:
+                    if isinstance(msg, AIMessage):
+                        full_response += msg.content
+                        yield convert_to_sse_format({
+                            "content": msg.content,
+                            "type": "message",
+                            "node": node,
+                            "previous_node": previous_node,
+                            "full_response": full_response
+                        })
+                    else:
+                        yield convert_to_sse_format({
+                            "content": msg.content,
+                            "type": "thinking",
+                            "node": node,
+                            "previous_node": previous_node
+                        })
+
+        # Send completion signal
+        yield convert_to_sse_format({
+            "content": "Response complete",
+            "type": "complete",
+            "full_response": full_response
+        })
+
+        # except Exception as e:
+        #     logger.error(f"Error during streaming: {e}")
+        #     yield convert_to_sse_format({
+        #         "content": f"Error: {str(e)}",
+        #         "type": "error"
+        #     })
+
+    return StreamingResponse(
+        wrapped_streaming_tokens(),
+        media_type="text/event-stream",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive"
+        }
+    )
