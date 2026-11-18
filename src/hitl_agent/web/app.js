@@ -296,7 +296,7 @@ function handleEvent(block, chat, reply) {
     reply.content += content;
     delete reply.status;
   } else {
-    reply.status = content;
+    reply.status = content.replace(/\*\*/g, "").trim();
   }
   render();
   return false;
