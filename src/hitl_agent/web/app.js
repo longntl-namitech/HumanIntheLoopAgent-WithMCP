@@ -358,6 +358,7 @@ input.addEventListener("keydown", (e) => {
 });
 $("composer").addEventListener("submit", (e) => {
   e.preventDefault();
+  if (streaming) return; // keep the typed text until the reply has finished
   const text = input.value;
   input.value = "";
   autosize();
