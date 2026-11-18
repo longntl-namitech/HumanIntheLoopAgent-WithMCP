@@ -102,7 +102,9 @@ class LocalCheckpointSaver(BaseCheckpointSaver):
                 pass
             else:
                 if k == "tool_message":
-                    copy["channel_values"]["tool_message"] = copy["channel_values"]["tool_message"].tool_calls
+                    tool_message = copy["channel_values"]["tool_message"]
+                    # Already a list of tool calls when the state was reloaded from a stored checkpoint.
+                    copy["channel_values"]["tool_message"] = getattr(tool_message, "tool_calls", tool_message)
                 # elif k == "messages":
                 #     copy["channel_values"]["messages"] = self.dump_json_messages(copy["channel_values"]["messages"])
                 else:
@@ -199,7 +201,9 @@ class LocalCheckpointSaver(BaseCheckpointSaver):
                 pass
             else:
                 if k == "tool_message":
-                    copy["channel_values"]["tool_message"] = copy["channel_values"]["tool_message"].tool_calls
+                    tool_message = copy["channel_values"]["tool_message"]
+                    # Already a list of tool calls when the state was reloaded from a stored checkpoint.
+                    copy["channel_values"]["tool_message"] = getattr(tool_message, "tool_calls", tool_message)
                 # elif k == "messages":
                 #     copy["channel_values"]["messages"] = self.dump_json_messages(copy["channel_values"]["messages"])
                 else:

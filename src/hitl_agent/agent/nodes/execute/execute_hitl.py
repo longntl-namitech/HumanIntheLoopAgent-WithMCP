@@ -18,7 +18,8 @@ async def execute_node(state):
     human_approval = state.get("human_approval", False)
 
     previous_node = state.get("previous_node", None)
-    if "CheckHumanApproval" in previous_node:
+    # A rejected call goes back to the LLM, not to the approval node again.
+    if "CheckHumanApproval" in previous_node and state.get("approval_status") != "rejected":
         return {
             "next_node": "CheckHumanApproval",
         }
@@ -33,10 +34,8 @@ async def execute_node(state):
                 content="",
                 tool_calls=state.get("tool_message", []))
         ]
-    else:
-        if state.get("tool_outputs", []):
-            input_messages += [state["tool_message"]]
-            input_messages += [msg for msg in state["tool_outputs"]]
+    # Every tool call sent to the LLM must be followed by its results.
+    input_messages += [msg for msg in state.get("tool_outputs", [])]
 
     response = await chain.ainvoke(
         {
@@ -49,12 +48,15 @@ async def execute_node(state):
         return {
             "is_tool_calling": True,
             "tool_message": response,
+            "tool_outputs": [],
+            "approval_status": "not_requested",
             "next_node": "CheckHumanApproval",
         }
     else:
         return {
             "is_tool_calling": False,
             "tool_message": None,
+            "tool_outputs": [],
             "next_node": "END",
         }
 
@@ -102,6 +104,7 @@ def human_approval_node(state):
             logger.debug('Human Approval Denied *** Ending Execution ***')
             return {
                 "approval_status": "rejected",
+                "is_tool_calling": False,
                 "previous_node": "CheckHumanApproval",
                 "next_node": "LLM"
             }
